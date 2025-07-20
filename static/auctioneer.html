@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quantum Auctioneer Live Feed - 8q.is</title>
+    <style>
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-secondary: #1a1a1a;
+            --text-primary: #00ff88;
+            --text-secondary: #00cc66;
+            --accent: #ff00ff;
+            --quantum: #00ffff;
+            --battle-red: #ff3366;
+            --battle-blue: #3366ff;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: var(--bg-secondary);
+            padding: 20px;
+            text-align: center;
+            border-bottom: 2px solid var(--accent);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 200%;
+            height: 100%;
+            background: linear-gradient(90deg, 
+                transparent, 
+                rgba(0, 255, 255, 0.1), 
+                transparent
+            );
+            animation: quantum-sweep 3s infinite;
+        }
+
+        @keyframes quantum-sweep {
+            0% { left: -100%; }
+            100% { left: 100%; }
+        }
+
+        h1 {
+            font-size: 2.5em;
+            text-shadow: 0 0 20px var(--quantum);
+            position: relative;
+            z-index: 1;
+        }
+
+        .subtitle {
+            color: var(--text-secondary);
+            margin-top: 10px;
+            font-style: italic;
+        }
+
+        .container {
+            display: flex;
+            flex: 1;
+            max-width: 1600px;
+            margin: 0 auto;
+            gap: 20px;
+            padding: 20px;
+        }
+
+        .live-feed {
+            flex: 2;
+            background: var(--bg-secondary);
+            border: 1px solid var(--text-secondary);
+            border-radius: 10px;
+            padding: 20px;
+            overflow-y: auto;
+            max-height: 70vh;
+        }
+
+        .leaderboard {
+            flex: 1;
+            background: var(--bg-secondary);
+            border: 1px solid var(--text-secondary);
+            border-radius: 10px;
+            padding: 20px;
+        }
+
+        .event {
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 4px solid var(--quantum);
+            background: rgba(0, 255, 255, 0.05);
+            border-radius: 5px;
+            animation: slide-in 0.5s ease-out;
+        }
+
+        @keyframes slide-in {
+            from {
+                transform: translateX(-100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .event.high-excitement {
+            border-left-color: var(--accent);
+            background: rgba(255, 0, 255, 0.1);
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+        }
+
+        .event.battle {
+            border-left-color: var(--battle-red);
+            background: linear-gradient(90deg, 
+                rgba(255, 51, 102, 0.1), 
+                rgba(51, 102, 255, 0.1)
+            );
+        }
+
+        .event-time {
+            font-size: 0.8em;
+            color: var(--text-secondary);
+            margin-bottom: 5px;
+        }
+
+        .event-content {
+            font-size: 1.1em;
+            line-height: 1.4;
+        }
+
+        .contributor-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            margin-bottom: 10px;
+            background: rgba(0, 255, 136, 0.1);
+            border-radius: 5px;
+            border: 1px solid transparent;
+            transition: all 0.3s;
+        }
+
+        .contributor-item:hover {
+            border-color: var(--text-primary);
+            transform: translateX(5px);
+        }
+
+        .contributor-rank {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: var(--accent);
+            margin-right: 10px;
+        }
+
+        .contributor-stats {
+            font-size: 0.9em;
+            color: var(--text-secondary);
+        }
+
+        .controls {
+            text-align: center;
+            padding: 20px;
+            background: var(--bg-secondary);
+            border-top: 2px solid var(--accent);
+        }
+
+        button {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            border: 2px solid var(--text-primary);
+            padding: 10px 20px;
+            margin: 0 10px;
+            cursor: pointer;
+            border-radius: 5px;
+            font-family: inherit;
+            transition: all 0.3s;
+        }
+
+        button:hover {
+            background: var(--text-primary);
+            color: var(--bg-primary);
+            transform: scale(1.05);
+        }
+
+        .status {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            margin-left: 20px;
+        }
+
+        .status.connected {
+            background: rgba(0, 255, 0, 0.2);
+            color: #00ff00;
+        }
+
+        .status.disconnected {
+            background: rgba(255, 0, 0, 0.2);
+            color: #ff0000;
+        }
+
+        .excitement-meter {
+            margin-top: 20px;
+            background: var(--bg-primary);
+            border-radius: 10px;
+            padding: 10px;
+        }
+
+        .excitement-bar {
+            height: 20px;
+            background: linear-gradient(90deg, 
+                var(--text-secondary), 
+                var(--quantum), 
+                var(--accent)
+            );
+            border-radius: 10px;
+            width: 0%;
+            transition: width 0.5s ease-out;
+        }
+
+        .ai-battle-banner {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            border: 4px solid var(--accent);
+            padding: 40px;
+            border-radius: 20px;
+            text-align: center;
+            display: none;
+            z-index: 1000;
+            animation: battle-entrance 0.5s ease-out;
+        }
+
+        @keyframes battle-entrance {
+            from {
+                transform: translate(-50%, -50%) scale(0);
+                opacity: 0;
+            }
+            to {
+                transform: translate(-50%, -50%) scale(1);
+                opacity: 1;
+            }
+        }
+
+        .ai-battle-banner h2 {
+            font-size: 3em;
+            color: var(--accent);
+            text-shadow: 0 0 30px var(--accent);
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⚡ Quantum Auctioneer Live Feed ⚡</h1>
+        <p class="subtitle">"Where memories meet mayhem and AI battles for supremacy!"</p>
+    </div>
+
+    <div class="container">
+        <div class="live-feed" id="liveFeed">
+            <h2>📡 Live Commentary</h2>
+            <div id="events"></div>
+        </div>
+
+        <div class="leaderboard">
+            <h2>🏆 Top Contributors</h2>
+            <div id="leaderboard"></div>
+            
+            <div class="excitement-meter">
+                <h3>🔥 Excitement Level</h3>
+                <div class="excitement-bar" id="excitementBar"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button onclick="changeStyle('fast')">Fast Talking</button>
+        <button onclick="changeStyle('dramatic')">Dramatic</button>
+        <button onclick="changeStyle('technical')">Technical</button>
+        <button onclick="changeStyle('comedic')">Comedic</button>
+        <button onclick="changeStyle('philosophical')">Philosophical</button>
+        <span class="status disconnected" id="status">Disconnected</span>
+    </div>
+
+    <div class="ai-battle-banner" id="battleBanner">
+        <h2>⚔️ AI BATTLE! ⚔️</h2>
+        <p id="battleText"></p>
+    </div>
+
+    <script>
+        let ws = null;
+        let reconnectInterval = null;
+        let eventCount = 0;
+        let currentExcitement = 0;
+
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/auctioneer/live`);
+
+            ws.onopen = () => {
+                console.log('Connected to Quantum Auctioneer!');
+                document.getElementById('status').textContent = 'Connected';
+                document.getElementById('status').className = 'status connected';
+                if (reconnectInterval) {
+                    clearInterval(reconnectInterval);
+                    reconnectInterval = null;
+                }
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleEvent(data);
+                } catch (e) {
+                    console.error('Failed to parse message:', e);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('Disconnected from Quantum Auctioneer');
+                document.getElementById('status').textContent = 'Disconnected';
+                document.getElementById('status').className = 'status disconnected';
+                if (!reconnectInterval) {
+                    reconnectInterval = setInterval(connect, 5000);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function handleEvent(message) {
+            const { event, timestamp, sequence } = message;
+            const eventDiv = createEventElement(event, timestamp);
+            const eventsContainer = document.getElementById('events');
+            
+            eventsContainer.insertBefore(eventDiv, eventsContainer.firstChild);
+            
+            // Keep only last 50 events
+            while (eventsContainer.children.length > 50) {
+                eventsContainer.removeChild(eventsContainer.lastChild);
+            }
+
+            // Update excitement meter
+            if (event.AuctioneerComment || event.AIBattle) {
+                const excitement = event.AuctioneerComment?.excitement_level || 
+                                 event.AIBattle?.event.excitement_level || 0;
+                updateExcitementMeter(excitement);
+            }
+
+            // Handle special events
+            if (event.LeaderboardUpdate) {
+                updateLeaderboard(event.LeaderboardUpdate.top_contributors);
+            }
+
+            if (event.AIBattle && event.AIBattle.event.excitement_level >= 9) {
+                showBattleBanner(event.AIBattle.event);
+            }
+        }
+
+        function createEventElement(event, timestamp) {
+            const div = document.createElement('div');
+            div.className = 'event';
+            
+            const time = new Date(timestamp * 1000).toLocaleTimeString();
+            const timeDiv = document.createElement('div');
+            timeDiv.className = 'event-time';
+            timeDiv.textContent = time;
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'event-content';
+            
+            if (event.AuctioneerComment) {
+                contentDiv.textContent = event.AuctioneerComment.message;
+                if (event.AuctioneerComment.excitement_level >= 8) {
+                    div.className += ' high-excitement';
+                }
+            } else if (event.NewContribution) {
+                contentDiv.textContent = `📦 ${event.NewContribution.contributor} contributed ${event.NewContribution.content_type} (Wave: ${event.NewContribution.wave_strength.toFixed(2)})`;
+            } else if (event.QuantumEntanglement) {
+                contentDiv.textContent = `🌀 QUANTUM ENTANGLEMENT: ${event.QuantumEntanglement.contributors.join(' & ')} (${(event.QuantumEntanglement.correlation * 100).toFixed(1)}%)`;
+                div.className += ' high-excitement';
+            } else if (event.AIBattle) {
+                contentDiv.textContent = event.AIBattle.event.commentary;
+                div.className += ' battle';
+            }
+            
+            div.appendChild(timeDiv);
+            div.appendChild(contentDiv);
+            return div;
+        }
+
+        function updateLeaderboard(contributors) {
+            const leaderboardDiv = document.getElementById('leaderboard');
+            leaderboardDiv.innerHTML = '';
+            
+            contributors.forEach((contributor, index) => {
+                const div = document.createElement('div');
+                div.className = 'contributor-item';
+                
+                const rankSpan = document.createElement('span');
+                rankSpan.className = 'contributor-rank';
+                rankSpan.textContent = `#${index + 1}`;
+                
+                const infoDiv = document.createElement('div');
+                infoDiv.innerHTML = `
+                    <div><strong>${contributor.name}</strong></div>
+                    <div class="contributor-stats">
+                        Wave: ${contributor.wave_strength.toFixed(2)} | 
+                        Emotion: ${contributor.emotional_impact.toFixed(2)} | 
+                        Contributions: ${contributor.total_contributions}
+                    </div>
+                `;
+                
+                div.appendChild(rankSpan);
+                div.appendChild(infoDiv);
+                leaderboardDiv.appendChild(div);
+            });
+        }
+
+        function updateExcitementMeter(level) {
+            currentExcitement = (currentExcitement * 0.7 + level * 0.3); // Smooth transition
+            const percentage = (currentExcitement / 10) * 100;
+            document.getElementById('excitementBar').style.width = `${percentage}%`;
+        }
+
+        function showBattleBanner(battleEvent) {
+            const banner = document.getElementById('battleBanner');
+            const text = document.getElementById('battleText');
+            text.textContent = battleEvent.commentary;
+            banner.style.display = 'block';
+            
+            setTimeout(() => {
+                banner.style.display = 'none';
+            }, 5000);
+        }
+
+        function changeStyle(style) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(`/style ${style}`);
+            }
+        }
+
+        // Connect on load
+        connect();
+    </script>
+</body>
+</html>

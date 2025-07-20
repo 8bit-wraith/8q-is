@@ -5,13 +5,14 @@
 //! Marqants are quantum-compressed markdown files that preserve meaning
 //! while achieving massive compression through wave-based encoding.
 
-use mem8::{WavePattern, Result};
+// use mem8::{WavePattern};
 use std::collections::HashMap;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use std::io::{Read, Write};
 use serde::{Serialize, Deserialize};
+use anyhow::Result;
 
 /// Magic bytes for .mq files
 pub const MQ_MAGIC: &[u8] = b"MQ03"; // Version 3 of Marqant format
@@ -91,7 +92,7 @@ impl Marqant {
         let header_pattern = regex::Regex::new(r"^#{1,6}\s+(.+)$").unwrap();
         for line in markdown.lines() {
             if let Some(captures) = header_pattern.captures(line) {
-                let header = captures.get(1).unwrap().as_str();
+                let _header = captures.get(1).unwrap().as_str();
                 semantic_map.entry("headers".to_string())
                     .or_insert_with(Vec::new)
                     .push(position);

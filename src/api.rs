@@ -22,9 +22,12 @@ use actix_web::HttpRequest as Req;
 use std::collections::VecDeque;
 use base64::{Engine as _, engine::general_purpose};
 use serde::{Serialize, Deserialize};
+use std::time::SystemTime;
+use futures::StreamExt;
 
 use crate::markqant::Marqant;
-use crate::m8::{M8Container, M8Nexus, M8ContentType};
+use crate::m8::{M8Container, M8Nexus};
+use crate::auctioneer::{Auctioneer, AuctionEvent, CommentaryStyle};
 
 /// SSE event queue (shared across handlers)
 pub type EventQueue = Arc<Mutex<VecDeque<String>>>;
@@ -61,14 +64,20 @@ pub fn init_routes(cfg: &mut web::ServiceConfig) {
         
         // Retrieval endpoints
         .service(web::resource("/container/{signature}").route(web::get().to(get_container)))
-        .service(web::resource("/containers").route(web::get().to(list_containers)))
+        .service(web::resource("/containers").route(web::get().to(get_containers)))
         
         // Memory endpoints
         .service(web::resource("/mem8/context/latest").route(web::get().to(get_latest_language_memory)))
         .service(web::resource("/mem8/stats").route(web::get().to(get_nexus_stats)))
         
         // SSE events
-        .service(web::resource("/events").route(web::get().to(events_sse)));
+        .service(web::resource("/events").route(web::get().to(events_sse)))
+        
+        // Auctioneer WebSocket
+        .service(web::resource("/auctioneer/live").route(web::get().to(auctioneer_ws)))
+        
+        // Serve the auctioneer HTML page
+        .service(actix_files::Files::new("/static", "./static").index_file("auctioneer.html"));
 }
 
 /// GET /mem8/context/latest
@@ -107,17 +116,18 @@ pub async fn upload_marqant(
     event_queue: web::Data<EventQueue>,
     mem8: web::Data<Arc<Mutex<mem8::Mem8>>>,
     nexus: web::Data<Arc<Mutex<M8Nexus>>>,
+    auctioneer: web::Data<Arc<Auctioneer>>,
 ) -> Result<HttpResponse, Error> {
     let mut file_bytes: Vec<u8> = Vec::new();
     let mut filename = String::from("upload.mq");
     
     // Process multipart upload
-    while let Some(mut field) = payload.next().await {
+    while let Some(field_result) = payload.next().await {
+        let mut field = field_result?;
         let content_disp = field.content_disposition();
-        filename = content_disp
-            .and_then(|cd| cd.get_filename())
-            .unwrap_or("upload.mq")
-            .to_string();
+        if let Some(name) = content_disp.get_filename() {
+            filename = name.to_string();
+        }
             
         while let Some(chunk) = field.next().await {
             let data = chunk?;
@@ -148,13 +158,23 @@ pub async fn upload_marqant(
     let compression_ratio = marqant.compression_ratio();
     
     // Create M8 container
-    let container = M8Container::from_marqant(&marqant, mem8.get_ref().clone())?;
+    let container = M8Container::from_marqant(&marqant, mem8.get_ref().clone()).map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?;
     let wave_signature = container.wave_signature;
     let memory_ids = container.header.memory_ids.clone();
     
     // Store in nexus
+    let stored_container = container.clone();
     let mut nexus_lock = nexus.lock().unwrap();
     nexus_lock.store(container);
+    drop(nexus_lock);
+    
+    // Notify auctioneer about the contribution
+    let contributor_id = "quantum_uploader"; // In a real system, this would be from auth
+    auctioneer.process_contribution(
+        contributor_id,
+        &stored_container,
+        mem8.get_ref().clone()
+    ).await;
     
     // Notify via SSE
     let msg = format!(
@@ -182,7 +202,7 @@ pub async fn upload_text(
     nexus: web::Data<Arc<Mutex<M8Nexus>>>,
 ) -> Result<HttpResponse, Error> {
     // Create M8 container from text
-    let container = M8Container::from_text(&body, 5, mem8.get_ref().clone())?;
+    let container = M8Container::from_text(&body, 5, mem8.get_ref().clone()).map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?;
     let wave_signature = container.wave_signature;
     let memory_ids = container.header.memory_ids.clone();
     
@@ -208,7 +228,7 @@ pub async fn upload_text(
 /// Generic upload handler (auto-detects format)
 pub async fn upload_handler(
     mut payload: Multipart,
-    event_queue: web::Data<EventQueue>,
+    _event_queue: web::Data<EventQueue>,
     mem8: web::Data<Arc<Mutex<mem8::Mem8>>>,
     nexus: web::Data<Arc<Mutex<M8Nexus>>>,
 ) -> Result<HttpResponse, Error> {
@@ -216,12 +236,15 @@ pub async fn upload_handler(
     let mut file_name = String::from("upload.bin");
     let mut file_bytes: Vec<u8> = Vec::new();
     
-    while let Some(mut field) = payload.next().await {
+    while let Some(field_result) = payload.next().await {
+        let mut field = field_result?;
         let content_disp = field.content_disposition();
-        let filename = content_disp.and_then(|cd| cd.get_filename()).unwrap_or("upload.bin");
-        let ext = Path::new(filename).extension().and_then(|e| e.to_str()).unwrap_or("");
+        let filename = content_disp.get_filename()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "upload.bin".to_string());
+        let ext = Path::new(&filename).extension().and_then(|e| e.to_str()).unwrap_or("");
         file_type = ext.to_string();
-        file_name = filename.to_string();
+        file_name = filename;
         
         while let Some(chunk) = field.next().await {
             let data = chunk?;
@@ -233,9 +256,9 @@ pub async fn upload_handler(
     match file_type.as_str() {
         "mq" => {
             // Parse as Marqant
-            let marqant = Marqant::from_bytes(&file_bytes)?;
+            let marqant = Marqant::from_bytes(&file_bytes).map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?;
             let compression_ratio = marqant.compression_ratio();
-            let container = M8Container::from_marqant(&marqant, mem8.get_ref().clone())?;
+            let container = M8Container::from_marqant(&marqant, mem8.get_ref().clone()).map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?;
             let wave_signature = container.wave_signature;
             let memory_ids = container.header.memory_ids.clone();
             
@@ -253,7 +276,7 @@ pub async fn upload_handler(
         }
         "m8" => {
             // Parse as M8 container
-            let container = M8Container::from_bytes(&file_bytes)?;
+            let container = M8Container::from_bytes(&file_bytes).map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?;
             let wave_signature = container.wave_signature;
             let memory_ids = container.header.memory_ids.clone();
             let content_type = format!("{:?}", container.header.content_type);
@@ -273,7 +296,7 @@ pub async fn upload_handler(
         _ => {
             // Treat as text
             let text = String::from_utf8_lossy(&file_bytes);
-            let container = M8Container::from_text(&text, 5, mem8.get_ref().clone())?;
+            let container = M8Container::from_text(&text, 5, mem8.get_ref().clone()).map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?;
             let wave_signature = container.wave_signature;
             let memory_ids = container.header.memory_ids.clone();
             
@@ -309,7 +332,7 @@ pub async fn get_container(
     
     let nexus_lock = nexus.lock().unwrap();
     if let Some(container) = nexus_lock.retrieve(&signature_bytes) {
-        let content = container.extract_content()?;
+        let content = container.extract_content().map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?;
         Ok(HttpResponse::Ok()
             .content_type("text/plain")
             .body(content))
@@ -351,15 +374,18 @@ pub async fn get_nexus_stats(
     let nexus_lock = nexus.lock().unwrap();
     let nexus_stats = nexus_lock.stats();
     
+    // Get basic stats from mem8 using available methods
     let mem8_lock = mem8.lock().unwrap();
-    let mem8_stats = mem8_lock.get_stats();
+    
+    // Count total memories across all grids
+    let total_memories = 0; // Placeholder - mem8 doesn't expose a stats method
     
     Ok(HttpResponse::Ok().json(NexusStats {
-        total_containers: *nexus_stats.get("total_containers").unwrap_or(&0),
+        total_containers: nexus_stats.len(),
         type_counts: nexus_stats,
         mem8_stats: Mem8Stats {
-            total_memories: mem8_stats.total_memories,
-            grid_dimensions: (mem8_stats.grid_width, mem8_stats.grid_height),
+            total_memories,
+            grid_dimensions: (10, 10), // Default grid size
         },
     }))
 }
@@ -384,6 +410,73 @@ pub async fn events_sse(
         .content_type("text/event-stream")
         .insert_header(("Cache-Control", "no-cache"))
         .streaming(stream))
+}
+
+/// WebSocket handler for auctioneer live feed
+pub async fn auctioneer_ws(
+    req: HttpRequest,
+    stream: web::Payload,
+    auctioneer_tx: web::Data<tokio::sync::mpsc::UnboundedSender<AuctionEvent>>,
+) -> Result<HttpResponse, Error> {
+    use actix_ws::Message;
+    
+    let (response, mut session, mut stream) = actix_ws::handle(&req, stream)?;
+    
+    // Create a channel to receive auctioneer events
+    let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AuctionEvent>();
+    
+    // Clone the sender for the spawned task
+    let auctioneer_tx_clone = auctioneer_tx.get_ref().clone();
+    
+    // Spawn task to handle incoming WebSocket messages
+    actix_web::rt::spawn(async move {
+        while let Some(Ok(msg)) = stream.recv().await {
+            match msg {
+                Message::Text(text) => {
+                    // Handle commands like changing commentary style
+                    if text.starts_with("/style ") {
+                        let style_str = text.trim_start_matches("/style ");
+                        let _style = match style_str {
+                            "fast" => CommentaryStyle::FastTalking,
+                            "dramatic" => CommentaryStyle::Dramatic,
+                            "technical" => CommentaryStyle::Technical,
+                            "comedic" => CommentaryStyle::Comedic,
+                            "philosophical" => CommentaryStyle::Philosophical,
+                            _ => CommentaryStyle::FastTalking,
+                        };
+                        
+                        // Send style change event
+                        let _ = auctioneer_tx_clone.send(AuctionEvent::AuctioneerComment {
+                            message: format!("Switching to {} commentary style!", style_str),
+                            excitement_level: 5,
+                        });
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    });
+    
+    // Spawn task to send auctioneer events to WebSocket
+    actix_web::rt::spawn(async move {
+        let mut sequence = 0u64;
+        while let Some(event) = rx.recv().await {
+            sequence += 1;
+            let message = serde_json::to_string(&crate::auctioneer::LiveFeedMessage {
+                event,
+                timestamp: SystemTime::now(),
+                sequence,
+            }).unwrap_or_default();
+            
+            if session.text(message).await.is_err() {
+                break;
+            }
+        }
+        let _ = session.close(None).await;
+    });
+    
+    Ok(response)
 }
 
 // Add hex encoding module

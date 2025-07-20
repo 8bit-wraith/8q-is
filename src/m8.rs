@@ -4,11 +4,21 @@
 //!
 //! M8 containers store wave-based memory patterns with cross-sensory bindings
 
-use mem8::{Mem8, WavePattern, EmotionalContext, Result};
+use mem8::{Mem8, EmotionalContext};
 use crate::markqant::Marqant;
 use std::sync::{Arc, Mutex};
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
+use anyhow::Result;
+
+/// Convert EmotionalContext to 3-byte representation
+fn emotional_context_to_bytes(ec: &EmotionalContext) -> [u8; 3] {
+    [
+        ((ec.valence as f32 + 1.0) * 127.5) as u8,
+        ((ec.arousal as f32 + 1.0) * 127.5) as u8,
+        ((ec.dominance as f32 + 1.0) * 127.5) as u8,
+    ]
+}
 
 /// Magic bytes for .m8 files
 pub const M8_MAGIC: &[u8] = b"M8C1"; // MEM8 Container v1
@@ -25,7 +35,7 @@ pub enum M8ContentType {
 }
 
 /// M8 container header
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct M8Header {
     pub version: u8,
     pub content_type: M8ContentType,
@@ -36,7 +46,7 @@ pub struct M8Header {
 }
 
 /// M8 container - nexus between files and wave memory
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct M8Container {
     pub header: M8Header,
     pub data: Vec<u8>,
@@ -51,7 +61,7 @@ impl M8Container {
         // Store in MEM8 as language memory with semantic understanding
         let markdown = marqant.to_markdown()?;
         let mut mem8_lock = mem8.lock().unwrap();
-        let memory_id = mem8_lock.store_language(&markdown, 7)?; // High importance
+        let memory_id = mem8_lock.store_language(&markdown, 7).map_err(|e| anyhow::anyhow!("Failed to store language: {}", e))?; // High importance
         drop(mem8_lock);
         
         // Create emotional context (neutral for now)
@@ -82,7 +92,7 @@ impl M8Container {
     pub fn from_text(text: &str, importance: u8, mem8: Arc<Mutex<Mem8>>) -> Result<Self> {
         // Store in MEM8
         let mut mem8_lock = mem8.lock().unwrap();
-        let memory_id = mem8_lock.store_language(text, importance)?;
+        let memory_id = mem8_lock.store_language(text, importance).map_err(|e| anyhow::anyhow!("Failed to store language: {}", e))?;
         drop(mem8_lock);
         
         let emotional_context = [128u8, 128u8, 128u8]; // Neutral
@@ -115,31 +125,27 @@ impl M8Container {
         emotional_context: EmotionalContext,
         mem8: Arc<Mutex<Mem8>>
     ) -> Result<Self> {
-        // Get wave patterns for all memories
-        let mem8_lock = mem8.lock().unwrap();
         let mut wave_data = Vec::new();
-        
-        for &id in &memory_ids {
-            if let Ok(wave) = mem8_lock.get_wave_pattern(id) {
-                // Serialize wave pattern (simplified for now)
-                wave_data.extend_from_slice(&id.to_le_bytes());
-                wave_data.extend_from_slice(&(wave.amplitude.len() as u32).to_le_bytes());
-                for &amp in &wave.amplitude {
-                    wave_data.extend_from_slice(&amp.to_le_bytes());
+        if let Ok(mem8_lock) = mem8.lock() {
+            for &id in &memory_ids {
+                if let Ok(wave) = mem8_lock.get_wave_pattern(id) {
+                    wave_data.extend_from_slice(&wave.amplitude.to_le_bytes());
+                    wave_data.extend_from_slice(&wave.frequency.to_le_bytes());
+                    wave_data.extend_from_slice(&wave.phase.to_le_bytes());
                 }
             }
         }
-        drop(mem8_lock);
         
+        let memory_count = memory_ids.len();
         let header = M8Header {
             version: 1,
             content_type: M8ContentType::Compound,
             timestamp: std::time::SystemTime::now(),
             memory_ids,
-            emotional_context: emotional_context.to_bytes(),
+            emotional_context: emotional_context_to_bytes(&emotional_context),
             metadata: HashMap::from([
                 ("source".to_string(), "compound".to_string()),
-                ("memory_count".to_string(), memory_ids.len().to_string()),
+                ("memory_count".to_string(), memory_count.to_string()),
             ]),
         };
         
@@ -160,7 +166,7 @@ impl M8Container {
         output.extend_from_slice(M8_MAGIC);
         
         // Header
-        let header_bytes = bincode::serialize(&self.header)?;
+        let header_bytes = bincode::serialize(&self.header).map_err(|e| anyhow::anyhow!("Failed to serialize header: {}", e))?;
         output.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
         output.extend_from_slice(&header_bytes);
         
@@ -187,7 +193,7 @@ impl M8Container {
             data[cursor], data[cursor+1], data[cursor+2], data[cursor+3]
         ]) as usize;
         cursor += 4;
-        let header: M8Header = bincode::deserialize(&data[cursor..cursor+header_len])?;
+        let header: M8Header = bincode::deserialize(&data[cursor..cursor+header_len]).map_err(|e| anyhow::anyhow!("Failed to deserialize header: {}", e))?;
         cursor += header_len;
         
         // Read wave signature
@@ -272,32 +278,12 @@ impl M8Nexus {
     
     /// Get nexus statistics
     pub fn stats(&self) -> HashMap<String, usize> {
-        let mut stats = HashMap::new();
-        stats.insert("total_containers".to_string(), self.containers.len());
-        
-        let mut type_counts = HashMap::new();
+        let mut counts = HashMap::new();
         for container in self.containers.values() {
             let type_name = format!("{:?}", container.header.content_type);
-            *type_counts.entry(type_name).or_insert(0) += 1;
+            *counts.entry(type_name).or_insert(0) += 1;
         }
-        
-        for (type_name, count) in type_counts {
-            stats.insert(format!("type_{}", type_name.to_lowercase()), count);
-        }
-        
-        stats
-    }
-}
-
-// Extension trait for EmotionalContext
-impl EmotionalContext {
-    fn to_bytes(&self) -> [u8; 3] {
-        // Simple encoding: valence, arousal, dominance as 0-255
-        [
-            ((self.valence + 1.0) * 127.5) as u8,
-            ((self.arousal + 1.0) * 127.5) as u8,
-            ((self.dominance + 1.0) * 127.5) as u8,
-        ]
+        counts
     }
 }
 
