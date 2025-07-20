@@ -1,0 +1,3 @@
+[submodule "f8t"]
+	path = f8t
+	url = git@github.com:8bit-wraith/f8t.git
