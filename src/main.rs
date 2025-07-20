@@ -82,10 +82,10 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::Logger::default())
             
             // Share quantum components with all routes
-            .app_data(web::Data::from(mem8.clone()))
-            .app_data(web::Data::from(nexus.clone()))
-            .app_data(web::Data::from(event_queue.clone()))
-            .app_data(web::Data::from(auctioneer.clone()))
+            .app_data(web::Data::new(mem8.clone()))
+            .app_data(web::Data::new(nexus.clone()))
+            .app_data(web::Data::new(event_queue.clone()))
+            .app_data(web::Data::new(auctioneer.clone()))
             .app_data(web::Data::new(auctioneer_tx.clone()))
             
             // Configure all routes
